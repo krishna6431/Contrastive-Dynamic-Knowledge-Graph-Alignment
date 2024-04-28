@@ -17,30 +17,30 @@ do
 for beta in "${betas[@]}"
 do
 
-python main.py --batch 'base' \
-              --gpu ${g} \
-              --dataset ${ds} \
-              --batch_size 1024 \
-              --lr 0.0005 \
-              --alpha 0.01 \
-              --beta ${beta} \
-              --save_path ${saved_path} \
-              --log_path ${log_path} \
-              --stop_step 3 \
-              --M ${M}
+# python main.py --batch 'base' \
+#               --gpu ${g} \
+#               --dataset ${ds} \
+#               --batch_size 1024 \
+#               --lr 0.0005 \
+#               --alpha 0.01 \
+#               --beta ${beta} \
+#               --save_path ${saved_path} \
+#               --log_path ${log_path} \
+#               --stop_step 3 \
+#               --M ${M}
 
-baseModel=`ls ../saved_model/ | grep "${ds}_base" | tail -1`
+# baseModel=`ls ../saved_model/ | grep "${ds}_base" | tail -1`
 
 python main.py --batch 'batch1' \
-               --load_path ${baseModel} \
+               --load_path "ZH-EN_base_New_Trained" \
                --gpu ${g} \
                --dataset ${ds} \
                --batch_size 512 \
                --lr 0.01 \
                --save_path ${saved_path} \
                --log_path ${log_path} \
-               --alpha ${alpha} \
                --beta ${beta} \
+               --alpha ${alpha} \
                --M ${M}
 
 batch=(2 3 4 5)

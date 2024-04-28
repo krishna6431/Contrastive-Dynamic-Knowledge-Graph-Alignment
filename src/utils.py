@@ -22,9 +22,10 @@ def set_logging(args):
 
 
 def set_device(args):
-    device = torch.device("cuda:" + str(args.gpu) if torch.cuda.is_available() else "cpu")
-    if device == 'cpu':
-        logging.info("\n no gpu found, program is running on cpu! \n")
+    # device = torch.device("cuda:" + str(args.gpu) if torch.cuda.is_available() else "cpu")
+    # if device == 'cpu':
+    #     logging.info("\n no gpu found, program is running on cpu! \n")
+    device = 'cpu'
     return device
 
 

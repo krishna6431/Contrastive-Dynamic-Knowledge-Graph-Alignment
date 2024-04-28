@@ -4,6 +4,7 @@ from eval import Evaluate
 import argparse
 import time
 from utils import *
+import torch.nn.functional as F
 
 warnings.filterwarnings('ignore')
 
@@ -12,7 +13,10 @@ import numpy as np
 import logging
 
 
-def train_base(args, kgs, model:Encoder_Model, evaluator:Evaluate):
+def train_base(args, kgs, model:Encoder_Model, evaluator:Evaluate,teacher_model:Encoder_Model):
+    teacher_model.load_state_dict(torch.load("/home2/krishna_2211cs19/ContEA/saved_model/FR-EN_base_dim100_1201-1243"))
+    teacher_model.to(device)  
+    teacher_model.eval() 
     total_train_time = 0.0
     best_pct = 0.0
     last_pct = 0.0
@@ -30,6 +34,16 @@ def train_base(args, kgs, model:Encoder_Model, evaluator:Evaluate):
             pairs = torch.from_numpy(pairs).to(device)
             optimizer.zero_grad()
             loss = model(pairs, None)
+            teacher = teacher_model.getEmbeddings(train_pair)
+            student = model.getEmbeddings(train_pair)
+            distillation_loss = F.mse_loss(teacher, student)
+            teacher2 = teacher_model.getEmbeddings2(train_pair)
+            student2 = model.getEmbeddings2(train_pair)
+            distillation_loss2 = F.mse_loss(teacher2, student2)
+            alpha_distillation = 0.5
+            beta_distillaltion = 0.5
+            loss += alpha_distillation * distillation_loss
+            loss += beta_distillaltion*distillation_loss2
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -187,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', default=0.1, type=float)
     parser.add_argument('--ind_dropout_rate', default=0.3, type=float)
 
-    parser.add_argument('--epoch', default=200, type=int)
+    parser.add_argument('--epoch', default=50, type=int)
     parser.add_argument('--depth', default=2, type=int)
     parser.add_argument('--gamma', default=2.0, type=float)
 
@@ -255,6 +269,27 @@ if __name__ == '__main__':
                          dataset=args.dataset,
                          batch=args.batch,
                          M=args.M)
+    
+    teacher_model = Encoder_Model(node_hidden=args.ent_hidden,
+                          rel_hidden=args.rel_hidden,
+                          node_size=kgs.old_ent_num,
+                          new_node_size=kgs.total_ent_num,
+                          rel_size=kgs.total_rel_num,
+                          triple_size=kgs.triple_num,
+                          device=device,
+                          adj_matrix=ent_adj,
+                          new_ent_nei=kgs.new_ent_nei,
+                          r_index=r_index,
+                          r_val=r_val,
+                          rel_matrix=ent_rel_adj,
+                          ent_matrix=ent_adj_with_loop,
+                          dropout_rate=args.dropout_rate,
+                          ind_dropout_rate=args.ind_dropout_rate,
+                          gamma=args.gamma,
+                          lr=args.lr,
+                          depth=args.depth,
+                          alpha=args.alpha,
+                          beta=args.beta).to(device)
 
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr)
 
@@ -262,7 +297,7 @@ if __name__ == '__main__':
     model.print_all_model_parameters()
 
     if 'base' in args.batch:
-        train_base(args, kgs, model, evaluator)
+        train_base(args, kgs, model, evaluator,teacher_model)
     else:
         finetune_batch(args, kgs, model, evaluator, train_pair, load_path)
 

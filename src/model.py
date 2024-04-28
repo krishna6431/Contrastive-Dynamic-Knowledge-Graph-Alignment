@@ -11,6 +11,7 @@ class Encoder_Model(nn.Module):
     def __init__(self, node_hidden, rel_hidden, triple_size, node_size, new_node_size, rel_size, device,
                  adj_matrix, r_index, r_val, rel_matrix, ent_matrix, alpha, beta, new_ent_nei,
                  dropout_rate=0.0, ind_dropout_rate=0.0, gamma=3, lr=0.005, depth=2):
+        # 1000 kr dene se run ho jata hain chhote dataset par  
         super(Encoder_Model, self).__init__()
         self.node_hidden = node_hidden
         self.node_size = node_size
@@ -33,8 +34,8 @@ class Encoder_Model(nn.Module):
         self.beta = beta
         self.new_ent_nei = torch.from_numpy(new_ent_nei).long().to(device)
 
-        self.ent_embedding = nn.Embedding(node_size, node_hidden)
-        self.rel_embedding = nn.Embedding(rel_size, rel_hidden)
+        self.ent_embedding = nn.Embedding(self.node_size, node_hidden)
+        self.rel_embedding = nn.Embedding(self.rel_size, rel_hidden)
         torch.nn.init.xavier_uniform_(self.ent_embedding.weight)
         torch.nn.init.xavier_uniform_(self.rel_embedding.weight)
 
@@ -52,6 +53,81 @@ class Encoder_Model(nn.Module):
                                            depth=self.depth,
                                            use_bias=True
                                            )
+    def getEmbeddings(self,train_paris):
+        out_feature = self.gcn_forward()
+        l, r = train_paris[:, 0], train_paris[:, 1]
+        return out_feature[l]
+    
+    def getEmbeddings2(self,train_paris):
+        out_feature = self.gcn_forward()
+        l, r = train_paris[:, 0], train_paris[:, 1]
+        return out_feature[r]
+
+    def corrupt_with_noise(self, embeddings, std_dev=0.01):
+        noise = torch.randn_like(embeddings) * std_dev
+        return embeddings + noise
+
+    def corrupt_with_dropout(self, embeddings, dropout_rate=0.1):
+        dropout_mask = torch.rand(embeddings.shape) < (1 - dropout_rate)
+        return embeddings * dropout_mask.float()
+
+    def corrupt_by_shuffling_features(self, embeddings):
+        idx = torch.randperm(embeddings.size(1))
+        return embeddings[:, idx]
+
+    def corrupt_with_negative_sampling(self, embeddings, negative_sample_indices):
+        return embeddings[negative_sample_indices]
+    
+
+    def ensemble_corruption(self, embeddings, negative_sample_indices=None, corruption_config=None):
+        if corruption_config is None:
+            corruption_config = {
+                'noise': {'enabled': True, 'std_dev': 0.01},
+                'dropout': {'enabled': True, 'rate': 0.1},
+                'shuffle': {'enabled': True},
+                'negative_sampling': {'enabled': False, 'indices': negative_sample_indices}
+            }
+        
+        corrupted_embeddings = embeddings.clone()
+        
+        if corruption_config['noise']['enabled']:
+            corrupted_embeddings = self.corrupt_with_noise(corrupted_embeddings, std_dev=corruption_config['noise']['std_dev'])
+        
+        if corruption_config['dropout']['enabled']:
+            corrupted_embeddings = self.corrupt_with_dropout(corrupted_embeddings, dropout_rate=corruption_config['dropout']['rate'])
+        
+        if corruption_config['shuffle']['enabled']:
+            corrupted_embeddings = self.corrupt_by_shuffling_features(corrupted_embeddings)
+        
+        if corruption_config['negative_sampling']['enabled'] and negative_sample_indices is not None:
+            corrupted_embeddings = self.corrupt_with_negative_sampling(corrupted_embeddings, negative_sample_indices=corruption_config['negative_sampling']['indices'])
+        
+        return corrupted_embeddings
+    
+    def contrastive_loss(self, z_i, z_j,temperature=0.07):
+        z_i = F.normalize(z_i, p=2, dim=1)
+        z_j = F.normalize(z_j, p=2, dim=1)
+
+        # Calculate the similarity matrix
+        N = 2 * z_i.shape[0]  # Total number of embeddings
+        z = torch.cat((z_i, z_j), dim=0)
+        sim_matrix = torch.exp(torch.mm(z, z.t().contiguous()) / temperature)
+
+        # Remove the similarity of embeddings to themselves
+        sim_matrix = sim_matrix - torch.eye(N, device=self.device) * 1e12
+
+        # Create positive mask
+        pos_mask = torch.cat((torch.arange(z_i.shape[0]), torch.arange(z_i.shape[0])), dim=0)
+        pos_mask = pos_mask.unsqueeze(0).repeat(N, 1).to(self.device)
+        pos_mask = torch.eq(pos_mask, pos_mask.t()).float()
+
+        # Compute loss
+        pos_sim = sim_matrix * pos_mask
+        pos_sim_sum = pos_sim.sum(dim=1)
+        log_prob = torch.log(pos_sim_sum / sim_matrix.sum(dim=1))
+        loss = -log_prob.mean()
+
+        return loss
 
     def avg(self, adj, emb, size: int):
         adj = torch.sparse_coo_tensor(indices=adj, values=torch.ones_like(adj[0, :], dtype=torch.float),
@@ -73,15 +149,22 @@ class Encoder_Model(nn.Module):
 
     def forward(self, train_paris:torch.Tensor, credible_pairs:torch.Tensor):
         out_feature = self.gcn_forward()
-
+        l, r = train_paris[:, 0].long(), train_paris[:, 1].long()
+        true_context_l = out_feature[l]
+        true_context_r = out_feature[r]
+        false_context_l = self.ensemble_corruption(out_feature[l])
+        false_context_r = self.ensemble_corruption(out_feature[r])
+        true_context = torch.cat([true_context_l, true_context_r], dim=0)
+        false_context = torch.cat([false_context_l, false_context_r], dim=0)
         loss1 = self.align_loss(train_paris, out_feature)
+        closs = self.contrastive_loss(true_context, false_context)
         if credible_pairs != None:  # finetune
             loss2 = self.inductive_loss(self.trainable_new_ent_embedding.weight, self.new_ent_nei)
-            loss3 = self.loss_no_neg_samples(credible_pairs, out_feature)
-            return loss1 + self.beta*loss3 + self.alpha * (train_paris.shape[0] / self.node_size) * loss2
+            # loss3 = self.loss_no_neg_samples(credible_pairs, out_feature)
+            return loss1  + self.alpha * (train_paris.shape[0] / self.node_size) * loss2 + closs
         else:  # retrain
             loss2 = self.inductive_loss(self.ent_embedding.weight, self.adj_list)
-            return loss1 + self.alpha * (train_paris.shape[0] / self.node_size) * loss2
+            return loss1 + self.alpha * (train_paris.shape[0] / self.node_size) * loss2 + closs
 
     def inductive_loss(self, ent_embed, edge_index):
         neighs = self.ent_embedding.weight[edge_index[1].long()]

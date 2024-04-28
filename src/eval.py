@@ -22,7 +22,7 @@ class Evaluate:
         return A_sim
 
     def avg_results(self, Matrix_A):
-        k = 10
+        k = 3
         avg_results = torch.sum(torch.topk(Matrix_A, k=k)[0], dim=-1) / k
         return avg_results
 
